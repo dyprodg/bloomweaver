@@ -57,6 +57,24 @@ Dieses Projekt wird als Solo-Projekt von Dennis Diepolder entwickelt.
 
 ---
 
+# 📊 Systemarchitektur Übersicht (grafisch)
+
+```mermaid
+flowchart TD
+    Client["Client"] -- HTTP POST Webhook --> APIGateway("API Gateway")
+    APIGateway --> WebhookLambda("Webhook Lambda")
+    WebhookLambda -- DELETE sofort --> PineconeDelete["Pinecone: Delete by doc_hash"]
+    WebhookLambda -- INSERT/UPDATE Event --> SQSChangeQueue("SQS: ChangeQueue")
+    SQSChangeQueue --> EmbeddingWorker("Embedding Worker Service")
+    EmbeddingWorker -- Vektorisiert --> SQSCreateQueue("SQS: CreateQueue") & SQSUpdateQueue("SQS: UpdateQueue")
+    SQSCreateQueue --> CreateLambda("Create Lambda")
+    SQSUpdateQueue --> UpdateLambda("Update Lambda")
+    CreateLambda --> PineconeCreate["Pinecone: Insert New Chunks"]
+    UpdateLambda --> PineconeUpdate["Pinecone: Replace Chunks"]
+    WebhookLambda -- Optional: Save File --> S3("S3 Bucket")
+```
+---
+
 # 🔢 Projektstruktur
 
 ```plaintext
