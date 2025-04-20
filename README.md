@@ -25,18 +25,18 @@ Dieses Projekt wird als Solo-Projekt von Dennis Diepolder entwickelt.
 - **Sprache:** Alles in **Go**, außer dem Embedding Worker, der in **Python** entwickelt ist.
 - **API Gateway** für Webhook Empfang.
 - **Webhook Lambda**:
-  - Löschen (DELETE) direkt
-  - Erstellen/Updaten (INSERT/UPDATE) über SQS Queuing
+  - Weiterleitung aller Operationen (INSERT/UPDATE/DELETE) über SQS Queuing
 - **SQS Queues**:
   - ChangeQueue
   - CreateQueue
   - UpdateQueue
+  - DeleteQueue
   - DeadLetterQueue (für Fehlerbehandlung)
 - **Embedding Worker** (FastAPI Python Service):
   - Modell: `BAAI/bge-small-en-v1.5`
   - Deployment über ECS Fargate oder EC2
-- **Create Lambda / Update Lambda**:
-  - Schreiben der Embeddings in Pinecone
+- **Create Lambda / Update Lambda / Delete Lambda**:
+  - Schreiben/Updaten/Löschen der Embeddings in Pinecone
 - **Pinecone** als Vektordatenbank
 - **Optional**: RDS PostgreSQL für Rohdaten + S3 für Dateiuploads
 
@@ -44,7 +44,7 @@ Dieses Projekt wird als Solo-Projekt von Dennis Diepolder entwickelt.
 
 - Komplett via **Terraform** gebaut.
 - CI/CD Pipelines mit **GitHub Actions**:
-  - Lambdas (webhook, create, update)
+  - Lambdas (webhook, create, update, delete)
   - Embedding Worker (Docker Build + ECR Push)
   - Astro Frontend (S3 Sync + CloudFront Invalidate)
 - Deployment getriggert per `paths` in GitHub Actions (nur bei Änderungen)
@@ -63,14 +63,16 @@ Dieses Projekt wird als Solo-Projekt von Dennis Diepolder entwickelt.
 flowchart TD
     Client["Client"] -- HTTP POST Webhook --> APIGateway("API Gateway")
     APIGateway --> WebhookLambda("Webhook Lambda")
-    WebhookLambda -- DELETE sofort --> PineconeDelete["Pinecone: Delete by doc_hash"]
+    WebhookLambda -- DELETE Event --> SQSDeleteQueue("SQS: DeleteQueue")
     WebhookLambda -- INSERT/UPDATE Event --> SQSChangeQueue("SQS: ChangeQueue")
     SQSChangeQueue --> EmbeddingWorker("Embedding Worker Service")
     EmbeddingWorker -- Vektorisiert --> SQSCreateQueue("SQS: CreateQueue") & SQSUpdateQueue("SQS: UpdateQueue")
     SQSCreateQueue --> CreateLambda("Create Lambda")
     SQSUpdateQueue --> UpdateLambda("Update Lambda")
+    SQSDeleteQueue --> DeleteLambda("Delete Lambda")
     CreateLambda --> PineconeCreate["Pinecone: Insert New Chunks"]
     UpdateLambda --> PineconeUpdate["Pinecone: Replace Chunks"]
+    DeleteLambda --> PineconeDelete["Pinecone: Delete by doc_hash"]
     WebhookLambda -- Optional: Save File --> S3("S3 Bucket")
 ```
 ---
@@ -85,20 +87,24 @@ flowchart TD
 │   │   ├── webhook/
 │   │   ├── create/
 │   │   ├── update/
+│   │   ├── delete/
 │   ├── sqs/
 │   │   ├── change-queue/
 │   │   ├── create-queue/
 │   │   ├── update-queue/
+│   │   ├── delete-queue/
 │   │   ├── deadletter-queue/
 │   ├── ecs/
 │   │   ├── embedding-worker/
 │   ├── s3_frontend/
+│   ├── s3_upload/
 │   ├── cloudfront/
 │   ├── rds/
 ├── lambdas/
 │   ├── webhook/
 │   ├── create/
 │   ├── update/
+│   ├── delete/
 ├── embedding-worker/
 │   ├── Dockerfile
 │   ├── app/
@@ -110,6 +116,7 @@ flowchart TD
 │   │   ├── lambda-webhook.yml
 │   │   ├── lambda-create.yml
 │   │   ├── lambda-update.yml
+│   │   ├── lambda-delete.yml
 │   │   ├── embedding-worker.yml
 │   │   ├── frontend-deploy.yml
 │   │   ├── terraform-apply.yml
@@ -122,12 +129,13 @@ flowchart TD
 ## API Gateway + Webhook Lambda
 
 - Validiert Webhook Calls.
-- Delegiert je nach `change_type` (insert/update/delete).
+- Delegiert je nach `change_type` (insert/update/delete) an entsprechende Queues.
 
 ## SQS Queues
 
 - Entkoppeln die Verarbeitungsschritte.
 - Retry Management durch DeadLetterQueues.
+- Separate Queues für alle Operationstypen (Ändern, Erstellen, Aktualisieren, Löschen).
 
 ## Embedding Worker
 
@@ -135,10 +143,11 @@ flowchart TD
 - Embedding Generierung über Huggingface Transformers.
 - Bereitstellung als REST API.
 
-## Create/Update Lambdas
+## Create/Update/Delete Lambdas
 
-- Schreiben/Updaten der Embeddings in Pinecone.
+- Schreiben/Updaten/Löschen der Embeddings in Pinecone.
 - Einhaltung der Konsistenz durch Doc-Hash Matching.
+- Batch-Verarbeitung zur Optimierung der Operationen.
 
 ## Pinecone
 
@@ -155,6 +164,7 @@ flowchart TD
 - Webhook Lambda Build/Deploy
 - Create Lambda Build/Deploy
 - Update Lambda Build/Deploy
+- Delete Lambda Build/Deploy
 - Embedding Worker Docker Build + Push zu ECR
 - Frontend Astro Build + Sync zu S3
 - Terraform Apply nur bei Änderung an Infrastruktur-Code
@@ -171,7 +181,7 @@ flowchart TD
 # 🚀 Deployment Prozess (First Boot)
 
 1. Terraform Infrastruktur aufbauen (terraform apply).
-2. Webhook, Create und Update Lambdas bauen und hochladen.
+2. Webhook, Create, Update und Delete Lambdas bauen und hochladen.
 3. Embedding Worker bauen, nach ECR pushen und Service deployen.
 4. Astro Frontend bauen und auf S3 synchronisieren.
 5. CloudFront Distribution invalidieren.
