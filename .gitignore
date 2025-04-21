@@ -58,6 +58,8 @@ crash.log
 crash.*.log
 .terraformrc
 terraform.rc
+.terraform.lock.hcl
+
 
 # AWS
 .aws/
