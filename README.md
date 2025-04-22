@@ -1,4 +1,3 @@
-Hier dein Plan – angepasst auf deinen Wunsch: S3-Handling als eigene Pipeline, eigene DeadLetterQueues für Pinecone und S3, keine Strukturänderung bei Change/Create/Update/Delete-Logik:
 
 ---
 
@@ -64,7 +63,7 @@ Hier dein Plan – angepasst auf deinen Wunsch: S3-Handling als eigene Pipeline,
 
 ---
 
-# 📊 Systemarchitektur Übersicht (grafisch)
+# 📊 Systemarchitektur Übersicht
 
 ```mermaid
 flowchart TD
@@ -155,7 +154,7 @@ flowchart TD
 
 ---
 
-# 📕 Infrastruktur-Komponenten (angepasst)
+# 📕 Infrastruktur-Komponenten
 
 - **Webhook Lambda**: delegiert an ChangeQueue oder DeleteQueue
 - **Embedding Worker**: erzeugt Embeddings, verteilt auf CreateQueue / UpdateQueue
