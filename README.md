@@ -16,50 +16,61 @@
 ### Backend
 
 - **Sprache:** Alles in **Go**, außer dem Embedding Worker, der in **Python** entwickelt ist.
-- **API Gateway** für Webhook Empfang.
+- **API Gateway**:
+  - **Secure API Gateway** mit Lambda Authorizer für Clerk Token Validation.
+  - **Simple API Gateway** mit API-Key Zugriff für serverseitige interne Prozesse.
 - **Webhook Lambda**:
-  - Weiterleitung aller Operationen (INSERT/UPDATE/DELETE) über SQS Queuing
+  - Validiert Requests.
+  - Leitet Operationen (INSERT/UPDATE/DELETE) gezielt über SQS Queues weiter.
+- **Auth Lambda**:
+  - Verifiziert Clerk JWTs für die Secure API Gateway Zugriffe.
 - **SQS Queues**:
-  - ChangeQueue (für Embedding Worker)
-  - CreateQueue (nach Embedding)
-  - UpdateQueue (nach Embedding)
-  - DeleteQueue (direkt)
-  - S3Queue (neu, für S3-Synchronisation)
-  - DeadLetterQueue Pinecone (nur für Pinecone-bezogene Fehler)
-  - DeadLetterQueue S3 (nur für S3-Handling Fehler)
+  - ChangeQueue (für den Embedding Worker)
+  - CreateQueue (für neu erzeugte Embeddings)
+  - UpdateQueue (für aktualisierte Embeddings)
+  - DeleteQueue (für Löschvorgänge ohne Embedding Worker)
+  - S3Queue (für paralleles Speichern/Löschen in S3)
+  - DeadLetterQueue Pinecone (Fehlerbehandlung Pinecone-Prozesse)
+  - DeadLetterQueue S3 (Fehlerbehandlung S3-Operationen)
 
 - **Embedding Worker** (FastAPI Python Service):
-  - Modell: `BAAI/bge-small-en-v1.5`
-  - Deployment über EC2 Auto Scaling Group (ASG)
-  - Kostenoptimierte Skalierung: 0 Instanzen im Idle, auto-skalierend bei Last
-  - Multiple Worker-Typen möglich (z.B. small/large embedding models)
+  - Modell: `hkunlp/instructor-xl`
+  - Bereitstellung über EC2 Auto Scaling Group (ASG).
+  - Keine laufenden Instanzen im Idle, automatische Skalierung bei Last.
+  - Unterstützung mehrerer Modelle (Small/Large Variants).
 
 - **Create Lambda / Update Lambda / Delete Lambda**:
-  - Schreiben/Updaten/Löschen der Embeddings in Pinecone
-  - Parallel Push der Event-Daten an **S3Queue**
+  - Schreiben, Aktualisieren und Löschen von Embeddings in Pinecone.
+  - Senden der Events zusätzlich an die S3Queue.
 
 - **S3 Worker Lambda**:
-  - Holt sich Events aus der S3Queue
-  - Führt entsprechend `PUT` (create/update) oder `DELETE` Operationen auf dem S3 Bucket aus.
+  - Bearbeitet Create/Update/Delete Events aus der S3Queue.
+  - Schreibt oder löscht entsprechende JSON-Dateien im S3 Bucket.
 
-- **Pinecone** als Vektordatenbank
-- **Optional**: RDS PostgreSQL für Rohdaten + S3 für Dateiuploads und Embedding-Backups.
+- **Pinecone**:
+  - Speicherung der Vektorrepräsentationen für schnelle semantische Suchen.
+
+- **Optional**:
+  - RDS PostgreSQL für Rohdaten.
+  - S3 Buckets für Dateiuploads und Embedding-Backups.
 
 ### Infrastruktur
 
-- Komplett via **Terraform** gebaut.
-- CI/CD Pipelines mit **GitHub Actions**:
-  - Lambdas (webhook, create, update, delete, s3-worker)
-  - Embedding Worker (Docker Build + ECR Push)
-  - Astro Frontend (S3 Sync + CloudFront Invalidate)
-- Deployment getriggert per `paths` in GitHub Actions (nur bei Änderungen)
+- Vollständig via **Terraform**.
+- CI/CD Pipelines via **GitHub Actions**:
+  - Lambda Deployments
+  - Embedding Worker Docker Build & Push
+  - Frontend Deployment
+  - Auth Lambda Deployment
+  - Terraform Deployment
+- Deployment nach Änderung an den jeweiligen `paths` getriggert.
 
 ### Monitoring & Logging
 
 - **CloudWatch Logs** für alle Lambdas und EC2 Services.
-- LogGroup Management über Terraform.
-- Fehlerhafte Nachrichten über eigene **DeadLetterQueues** (Pinecone und S3 getrennt).
-- CloudWatch Alarme für Auto Scaling Trigger.
+- Separate LogGroups.
+- Fehlerbehandlung über eigene DeadLetterQueues.
+- CloudWatch Alarme für EC2 Auto Scaling und Queue-Tiefe.
 
 ---
 
@@ -67,13 +78,19 @@
 
 ```mermaid
 flowchart TD
-    Client["Client"] -- HTTP POST Webhook --> APIGateway("API Gateway")
-    APIGateway --> WebhookLambda("Webhook Lambda")
+    Client["Client App (Clerk User)"] -- HTTP POST Webhook --> SecureAPIGateway("API Gateway (Lambda Authorizer)")
+    LocalService["Backend Prozess"] -- HTTP POST Webhook --> SimpleAPIGateway("API Gateway (API Key Auth)")
+
+    SecureAPIGateway --> AuthLambda("Lambda Authorizer")
+    AuthLambda --> WebhookLambda("Webhook Lambda")
+
+    SimpleAPIGateway --> WebhookLambda
+
     WebhookLambda -- DELETE Event --> SQSDeleteQueue("SQS: DeleteQueue")
     WebhookLambda -- INSERT/UPDATE Event --> SQSChangeQueue("SQS: ChangeQueue")
     
     subgraph "Auto Scaling Group (0-N Instances)"
-    EmbeddingWorker("Embedding Worker Service")
+    EmbeddingWorker("Embedding Worker - Instructor XL")
     end
     
     SQSChangeQueue -- Triggers ASG Scaling --> EmbeddingWorker
@@ -92,7 +109,7 @@ flowchart TD
     DeleteLambda --> SQS3Queue
     
     SQS3Queue --> S3Lambda("S3 Worker Lambda")
-    S3Lambda --> S3Bucket["S3: Store or Delete Embedding JSON"]
+    S3Lambda --> S3Bucket["S3 Bucket (JSON Save/Delete)"]
 ```
 
 ---
@@ -103,18 +120,21 @@ flowchart TD
 /bloomweaver
 ├── terraform/
 │   ├── api_gateway/
+│   │   ├── secure_api_gateway/
+│   │   ├── simple_api_gateway/
 │   ├── lambdas/
 │   │   ├── webhook/
 │   │   ├── create/
 │   │   ├── update/
 │   │   ├── delete/
-│   │   ├── s3-worker/   # neu
+│   │   ├── s3-worker/
+│   │   ├── auth/
 │   ├── sqs/
 │   │   ├── change-queue/
 │   │   ├── create-queue/
 │   │   ├── update-queue/
 │   │   ├── delete-queue/
-│   │   ├── s3-queue/         # neu
+│   │   ├── s3-queue/
 │   │   ├── deadletter-queue-pinecone/
 │   │   ├── deadletter-queue-s3/
 │   ├── ec2/
@@ -130,7 +150,8 @@ flowchart TD
 │   ├── create/
 │   ├── update/
 │   ├── delete/
-│   ├── s3-worker/   # neu
+│   ├── s3-worker/
+│   ├── auth/
 ├── embedding-worker/
 │   ├── Dockerfile
 │   ├── app/
@@ -146,7 +167,8 @@ flowchart TD
 │   │   ├── lambda-create.yml
 │   │   ├── lambda-update.yml
 │   │   ├── lambda-delete.yml
-│   │   ├── lambda-s3-worker.yml   # neu
+│   │   ├── lambda-s3-worker.yml
+│   │   ├── lambda-auth.yml
 │   │   ├── embedding-worker.yml
 │   │   ├── frontend-deploy.yml
 │   │   ├── terraform-apply.yml
@@ -156,10 +178,13 @@ flowchart TD
 
 # 📕 Infrastruktur-Komponenten
 
-- **Webhook Lambda**: delegiert an ChangeQueue oder DeleteQueue
-- **Embedding Worker**: erzeugt Embeddings, verteilt auf CreateQueue / UpdateQueue
-- **Create/Update/Delete Lambdas**: Verarbeiten Pinecone-Operationen, pushen Events zusätzlich an S3Queue
-- **S3 Worker Lambda**: synchronisiert Create/Update/Delete in S3 Bucket
-- **Zwei DeadLetterQueues**: getrennte Fehlerbehandlung für Pinecone und S3 Fehler
+- **Secure API Gateway** nutzt Auth Lambda für Clerk Token Prüfung.
+- **Simple API Gateway** für serverseitige interne Calls per API Key.
+- **Webhook Lambda** verarbeitet alle Events und routed sie.
+- **Embedding Worker** skaliert automatisch basierend auf Last.
+- **Create/Update/Delete Lambdas** kommunizieren mit Pinecone und senden parallele Events an die S3Queue.
+- **S3 Worker Lambda** hält den S3 Speicher synchron.
+- **Zwei getrennte DeadLetterQueues** für Pinecone- und S3-Fehler.
+- **GitHub Actions** verwalten alle Build/Deploy Aufgaben.
 
 ---
