@@ -1,4 +1,3 @@
-
 ---
 
 # 📊 Systemarchitektur
@@ -21,11 +20,15 @@
   - **Simple API Gateway** mit API-Key Zugriff für serverseitige interne Prozesse.
 - **Webhook Lambda**:
   - Validiert Requests.
-  - Leitet Operationen (INSERT/UPDATE/DELETE) gezielt über SQS Queues weiter.
+  - Generiert UUID für Dokumente und lädt große Dokumente (>256KB) in den S3 Transfer Bucket.
+  - Leitet Operationen (INSERT/UPDATE/DELETE) mit Referenz zum S3-Objekt gezielt über SQS Queues weiter.
 - **Auth Lambda**:
   - Verifiziert Clerk JWTs für die Secure API Gateway Zugriffe.
+- **S3 Transfer Bucket**:
+  - Temporäre Speicherung großer Dokumente (>256KB), die nicht direkt über SQS übertragen werden können.
+  - Embedding Worker lädt Dokumente von hier, statt direkt aus der Queue.
 - **SQS Queues**:
-  - ChangeQueue (für den Embedding Worker)
+  - ChangeQueue (für den Embedding Worker, enthält S3-Referenzen)
   - CreateQueue (für neu erzeugte Embeddings)
   - UpdateQueue (für aktualisierte Embeddings)
   - DeleteQueue (für Löschvorgänge ohne Embedding Worker)
@@ -35,6 +38,7 @@
 
 - **Embedding Worker** (FastAPI Python Service):
   - Modell: `hkunlp/instructor-xl`
+  - Lädt Dokumente aus dem S3 Transfer Bucket basierend auf Referenzen aus der ChangeQueue.
   - Bereitstellung über EC2 Auto Scaling Group (ASG).
   - Keine laufenden Instanzen im Idle, automatische Skalierung bei Last.
   - Unterstützung mehrerer Modelle (Small/Large Variants).
@@ -87,13 +91,15 @@ flowchart TD
     SimpleAPIGateway --> WebhookLambda
 
     WebhookLambda -- DELETE Event --> SQSDeleteQueue("SQS: DeleteQueue")
-    WebhookLambda -- INSERT/UPDATE Event --> SQSChangeQueue("SQS: ChangeQueue")
+    WebhookLambda -- Dokument > 256KB --> S3TransferBucket("S3 Transfer Bucket")
+    WebhookLambda -- INSERT/UPDATE mit S3-Referenz --> SQSChangeQueue("SQS: ChangeQueue")
     
     subgraph "Auto Scaling Group (0-N Instances)"
     EmbeddingWorker("Embedding Worker - Instructor XL")
     end
     
     SQSChangeQueue -- Triggers ASG Scaling --> EmbeddingWorker
+    S3TransferBucket -- Worker lädt Dokumente --> EmbeddingWorker
     EmbeddingWorker -- Vektorisiert --> SQSCreateQueue("SQS: CreateQueue") & SQSUpdateQueue("SQS: UpdateQueue")
     
     SQSCreateQueue --> CreateLambda("Create Lambda")
@@ -119,32 +125,28 @@ flowchart TD
 ```plaintext
 /bloomweaver
 ├── terraform/
-│   ├── api_gateway/
-│   │   ├── secure_api_gateway/
-│   │   ├── simple_api_gateway/
-│   ├── lambdas/
-│   │   ├── webhook/
-│   │   ├── create/
-│   │   ├── update/
-│   │   ├── delete/
-│   │   ├── s3-worker/
-│   │   ├── auth/
-│   ├── sqs/
-│   │   ├── change-queue/
-│   │   ├── create-queue/
-│   │   ├── update-queue/
-│   │   ├── delete-queue/
-│   │   ├── s3-queue/
-│   │   ├── deadletter-queue-pinecone/
-│   │   ├── deadletter-queue-s3/
-│   ├── ec2/
-│   │   ├── auto_scaling_group/
-│   │   ├── launch_template/
-│   │   ├── scaling_policies/
-│   ├── s3_frontend/
-│   ├── s3_upload/
-│   ├── cloudfront/
-│   ├── rds/
+│   ├── api-apigateway-key.tf
+│   ├── backend.tf
+│   ├── cloudfront.tf
+│   ├── ec2-asg.tf
+│   ├── ec2-launch-template.tf
+│   ├── lambda-auth.tf
+│   ├── lambda-create.tf
+│   ├── lambda-delete.tf
+│   ├── lambda-s3-worker.tf
+│   ├── lambda-update.tf
+│   ├── lambda-webhook.tf
+│   ├── providers.tf
+│   ├── s3-data-upload.tf
+│   ├── s3-frontend.tf
+│   ├── s3-vectors.tf
+│   ├── sqs-change-queue.tf
+│   ├── sqs-create-queue.tf
+│   ├── sqs-deadletter-s3.tf
+│   ├── sqs-delete-queue.tf
+│   ├── sqs-s3-queue.tf
+│   ├── sqs-update-queue.tf
+│   ├── variables.tf
 ├── lambdas/
 │   ├── webhook/
 │   ├── create/
@@ -178,6 +180,12 @@ flowchart TD
 
 # 📕 Infrastruktur-Komponenten
 
+- **Terraform Struktur** ist flach organisiert mit funktionalen Dateien statt verschachtelten Modulen:
+  - API Gateway mit API-Key Authentifizierung (`api-apigateway-key.tf`)
+  - Lambda Funktionen in einzelnen Dateien (`lambda-*.tf`)
+  - SQS Queues in funktionalen Dateien (`sqs-*.tf`)
+  - EC2 Auto Scaling Komponenten (`ec2-*.tf`)
+  - S3 Buckets für verschiedene Anwendungsfälle (`s3-*.tf`)
 - **Secure API Gateway** nutzt Auth Lambda für Clerk Token Prüfung.
 - **Simple API Gateway** für serverseitige interne Calls per API Key.
 - **Webhook Lambda** verarbeitet alle Events und routed sie.

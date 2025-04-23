@@ -26,7 +26,7 @@ Building a scalable vector embedding pipeline for semantic search using Go, Pyth
 **Sprint Goal:** Terraform-Basis für Kern-AWS-Ressourcen steht, grundlegende Konnektivität kann getestet werden.
 
 **Tasks:**
-- [ ] Terraform Projekt Setup (Provider, Backend State S3/DynamoDB)
+- [x] Terraform Projekt Setup (Provider, Backend State S3/DynamoDB)
 - [ ] Terraform Module für:
   - [ ] IAM Roles (Basis-Rollen für Lambdas, EC2)
   - [ ] SQS Queues (Change, Create, Update, Delete, S3, DeadLetterQueues)

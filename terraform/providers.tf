@@ -24,3 +24,11 @@ provider "aws" {
   region = var.region
   alias  = "eu-central-1"
 }
+
+# Get current AWS account ID
+data "aws_caller_identity" "current" {}
+
+# Output the account ID for reference
+output "account_id" {
+  value = data.aws_caller_identity.current.account_id
+}
