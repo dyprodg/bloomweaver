@@ -58,6 +58,22 @@ data "aws_iam_policy_document" "change_queue_policy" {
       values   = [aws_lambda_function.webhook_lambda.arn]
     }
   }
+
+  statement {
+    sid    = "AllowEC2ReceiveMessage"
+    effect = "Allow"
+    principals {
+      type        = "AWS"
+      identifiers = [aws_iam_role.embedding_worker_role.arn]
+    }
+    actions = [
+      "sqs:ReceiveMessage",
+      "sqs:DeleteMessage",
+      "sqs:GetQueueAttributes",
+      "sqs:ChangeMessageVisibility"
+    ]
+    resources = [aws_sqs_queue.change_queue.arn]
+  }
 }
 
 # Attach policy to SQS queue

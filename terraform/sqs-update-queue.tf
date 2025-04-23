@@ -19,19 +19,14 @@ resource "aws_sqs_queue" "update_queue" {
 # IAM Policy Document for Update Queue
 data "aws_iam_policy_document" "update_queue_policy" {
   statement {
-    sid    = "AllowLambdaSendMessage"
+    sid    = "AllowEC2SendMessage"
     effect = "Allow"
     principals {
-      type        = "Service"
-      identifiers = ["lambda.amazonaws.com"]
+      type        = "AWS"
+      identifiers = [aws_iam_role.embedding_worker_role.arn]
     }
     actions   = ["sqs:SendMessage", "sqs:SendMessageBatch"]
     resources = [aws_sqs_queue.update_queue.arn]
-    condition {
-      test     = "ArnEquals"
-      variable = "aws:SourceArn"
-      values   = [aws_lambda_function.webhook_lambda.arn]
-    }
   }
 }
 

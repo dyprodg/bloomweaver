@@ -92,11 +92,11 @@ resource "aws_lambda_function" "delete_lambda" {
   function_name = "${var.project}-delete-lambda"
   description   = "Lambda for deleting documents from Pinecone"
   role          = aws_iam_role.delete_lambda_role.arn
-  handler       = "main"
-  runtime       = "go1.x"
+  handler       = var.lambda_handler
+  runtime       = var.lambda_runtime
   filename      = "${path.module}/../lambdas/delete/main.zip"
   timeout       = 60
-  memory_size   = 128
+  memory_size   = var.lambda_memory_size_small
 
   environment {
     variables = {

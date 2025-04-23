@@ -92,11 +92,11 @@ resource "aws_lambda_function" "create_lambda" {
   function_name = "${var.project}-create-lambda"
   description   = "Lambda for creating documents in Pinecone"
   role          = aws_iam_role.create_lambda_role.arn
-  handler       = "main"
-  runtime       = "go1.x"
+  handler       = var.lambda_handler
+  runtime       = var.lambda_runtime
   filename      = "${path.module}/../lambdas/create/main.zip"
   timeout       = 60
-  memory_size   = 128
+  memory_size   = var.lambda_memory_size_small
 
   environment {
     variables = {

@@ -89,11 +89,11 @@ resource "aws_lambda_function" "s3_worker_lambda" {
   function_name = "${var.project}-s3-worker-lambda"
   description   = "Lambda for saving/deleting documents to/from S3"
   role          = aws_iam_role.s3_worker_lambda_role.arn
-  handler       = "main"
-  runtime       = "go1.x"
+  handler       = var.lambda_handler
+  runtime       = var.lambda_runtime
   filename      = "${path.module}/../lambdas/s3-worker/main.zip"
   timeout       = 60
-  memory_size   = 128
+  memory_size   = var.lambda_memory_size_small
 
   environment {
     variables = {

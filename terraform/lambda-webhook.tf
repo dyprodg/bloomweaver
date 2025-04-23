@@ -98,11 +98,11 @@ resource "aws_lambda_function" "webhook_lambda" {
   function_name = "${var.project}-webhook-lambda"
   description   = "Lambda for processing webhook requests (CREATE/UPDATE/DELETE)"
   role          = aws_iam_role.webhook_lambda_role.arn
-  handler       = "main"
-  runtime       = "go1.x"
+  handler       = var.lambda_handler
+  runtime       = var.lambda_runtime
   filename      = "${path.module}/../lambdas/webhook/main.zip" # Assumes the compiled Go code is zipped and placed here
   timeout       = 30
-  memory_size   = 128
+  memory_size   = var.lambda_memory_size_small
 
   environment {
     variables = {
