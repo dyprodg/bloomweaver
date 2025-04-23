@@ -1,22 +1,4 @@
-# SQS Delete Queue for delete operations
-resource "aws_sqs_queue" "delete_queue_dlq" {
-  name                      = "${var.project}-delete-queue-dlq"
-  delay_seconds             = 0
-  max_message_size          = 262144  # 256 KB
-  message_retention_seconds = 1209600 # 14 days
-  receive_wait_time_seconds = 20
-
-  # Enable server-side encryption
-  sqs_managed_sse_enabled = true
-
-  # Set tags
-  tags = {
-    Name        = "${var.project}-delete-queue-dlq"
-    Environment = var.environment
-  }
-}
-
-# Main Delete Queue
+# Vector Delete Queue
 resource "aws_sqs_queue" "delete_queue" {
   name                       = "${var.project}-delete-queue"
   delay_seconds              = 0
@@ -39,6 +21,8 @@ resource "aws_sqs_queue" "delete_queue" {
     Name        = "${var.project}-delete-queue"
     Environment = var.environment
   }
+
+  depends_on = [aws_sqs_queue.delete_queue_dlq]
 }
 
 # IAM Policy Document for SQS Queue
