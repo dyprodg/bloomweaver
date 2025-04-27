@@ -35,7 +35,8 @@ Building a scalable vector embedding pipeline for semantic search using Go, Pyth
   - [ ] Simple API Gateway (ohne Auth erstmal)
   - [ ] S3 Bucket für Backups
   - [ ] DynamoDB für Dokument-Status Tracking
-  - [ ] EC2 Spot-Instances für Go Worker und Python API
+  - [ ] EC2 Spot-Instance für Go Worker
+  - [ ] EC2 ASG für Python API mit Load Balancer
 - [ ] "Hello World" Lambda Funktion (Go) für Webhook
 - [ ] Deployment der Lambda Funktion
 - [ ] Verbindung Simple API Gateway → "Hello World" Webhook Lambda
@@ -88,47 +89,56 @@ Building a scalable vector embedding pipeline for semantic search using Go, Pyth
 **Sprint Goal:** Go Embedding Worker kann Nachrichten aus der ChangeQueue in Batches verarbeiten und Chunking durchführen.
 
 **Tasks:**
-- [ ] Terraform Module für EC2 Spot-Instances (Go Worker)
+- [ ] Terraform Module für EC2 Spot-Instance (Go Worker)
 - [ ] Implementierung des Go Workers:
   - [ ] SQS Batch Message Processing
   - [ ] DynamoDB Status-Check vor der Verarbeitung
   - [ ] Chunking-Implementierung
   - [ ] Multi-Threading/Goroutines für parallele Verarbeitung
   - [ ] Großzügige SQS Visibility Timeout Handling
+  - [ ] Automatisches Herunterfahren bei leerer Queue
   - [ ] Dockerfile für den Go Worker
 - [ ] IAM Role für EC2 Spot-Instance (SQS/DynamoDB/S3 Zugriff)
 - [ ] Build & Push des Docker Images zu ECR
 - [ ] Scripts für manuelles Starten/Scheduling des Workers
 
 **Definition of Done:**
-- Go Worker kann erfolgreich auf Spot-Instances laufen
+- Go Worker kann erfolgreich auf Spot-Instance laufen
 - Worker kann Batches aus der ChangeQueue verarbeiten
 - Worker prüft DynamoDB-Status vor Verarbeitung
 - Worker führt Chunking durch
+- Worker fährt automatisch herunter, wenn Queue leer ist
 - Worker kann fehlerfrei beendet werden, Messages kehren zur Queue zurück
 
 ### Sprint 5: Python Embedding API - Setup & Integration
-**Sprint Goal:** Python FastAPI Service zur Berechnung von Embeddings ist implementiert und kann vom Go Worker angesprochen werden.
+**Sprint Goal:** Python FastAPI Service zur Berechnung von Embeddings ist implementiert und kann vom Go Worker über Load Balancer angesprochen werden.
 
 **Tasks:**
-- [ ] Terraform Module für EC2 Spot-Instances (Python API)
+- [ ] Terraform Module für:
+  - [ ] EC2 Auto Scaling Group (Python API)
+  - [ ] Launch Template für EC2 Instances
+  - [ ] Load Balancer für API-Zugriff
+  - [ ] Auto-Scaling Policies für Skalierung nach Bedarf
 - [ ] Implementierung der Python FastAPI:
   - [ ] Endpunkte für das Embedding
   - [ ] Model Loading (`instructor-xl`)
-  - [ ] Integration mit dem Go Worker
+  - [ ] Health-Check Endpunkte für Load Balancer
   - [ ] Dockerfile für die Python API
-- [ ] IAM Role für die EC2 Spot-Instance
+- [ ] IAM Role für EC2 Instances im ASG
 - [ ] Build & Push des Docker Images zu ECR
 - [ ] Integration in den Go Worker:
-  - [ ] HTTP Client für API-Calls
+  - [ ] HTTP Client für API-Calls zum Load Balancer
+  - [ ] Warten auf API-Bereitschaft beim Start
   - [ ] Fehlerbehandlung & Retry-Logik
   - [ ] Parallelisierung der API-Anfragen
 
 **Definition of Done:**
-- Python API kann erfolgreich auf Spot-Instances laufen
-- Go Worker kann die Python API ansprechen
+- Python API ASG kann erfolgreich gestartet werden
+- Load Balancer leitet Anfragen korrekt an die API-Instances weiter
+- Go Worker kann über den Load Balancer die Python API ansprechen
 - API liefert korrekte Embeddings zurück
 - System handhabt Fehler und Retries korrekt
+- ASG skaliert automatisch nach Last hoch und runter
 
 ### Sprint 6: Pinecone Integration
 **Sprint Goal:** Create/Update/Delete Lambdas können Daten in Pinecone schreiben/löschen.
@@ -197,12 +207,13 @@ Building a scalable vector embedding pipeline for semantic search using Go, Pyth
 - Gültige Requests werden zur Webhook Lambda durchgelassen
 
 ### Sprint 9: Batch Job Scheduling & Monitoring
-**Sprint Goal:** Automatisiertes Scheduling für Go Worker und umfassendes Monitoring.
+**Sprint Goal:** Automatisiertes Scheduling für Go Worker und Python API ASG sowie umfassendes Monitoring.
 
 **Tasks:**
-- [ ] Implementierung Batch Job für Go Worker:
-  - [ ] AWS EventBridge Scheduling
-  - [ ] Oder alternativer Scheduling-Mechanismus
+- [ ] Implementierung Scheduling:
+  - [ ] AWS EventBridge Scheduling für Worker/ASG-Start
+  - [ ] Trigger-basiertes Starten bei hohem Queue-Volumen
+  - [ ] Automatische Shutdown-Mechanismen
 - [ ] CloudWatch Dashboards für:
   - [ ] SQS Queue Metriken
   - [ ] DynamoDB Metriken
@@ -216,7 +227,8 @@ Building a scalable vector embedding pipeline for semantic search using Go, Pyth
 - [ ] Automatisierte Recovery Prozesse
 
 **Definition of Done:**
-- Go Worker wird automatisch zu definierten Zeiten gestartet
+- Go Worker und Python API ASG werden automatisch zu definierten Zeiten oder basierend auf Triggern gestartet
+- Systeme fahren automatisch herunter, wenn keine Arbeit mehr anliegt
 - CloudWatch Dashboards zeigen System-Health
 - Alarme werden bei Problemen ausgelöst
 - Recovery-Prozesse funktionieren zuverlässig

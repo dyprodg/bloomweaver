@@ -43,20 +43,23 @@
   - DeadLetterQueue S3 (Fehlerbehandlung S3-Operationen)
 
 - **Embedding Worker** (Go Service):
-  - Manuell oder per Batch-Schedule gestartet (nicht via ASG)
+  - Manuell, per Cron-Job oder bei hohem SQS-Volumen gestartet
+  - Wartet auf die Bereitschaft der Python Embedding API
   - Prozessiert SQS Messages in Batches aus der ChangeQueue
   - Prüft in DynamoDB den aktuellen Status des Dokuments vor der Verarbeitung
   - Führt das Chunking der Dokumente durch
   - Nutzt große Spot-Instances für kostengünstige Verarbeitung
   - Bei Absturz werden Messages durch SQS Visibility Timeout zurück in die Queue gelegt
   - Verwendet großzügigen SQS Visibility Timeout für die Batch-Verarbeitung
+  - Fährt automatisch herunter, wenn die Queue leer ist
 
 - **Embedding API** (Python FastAPI Service):
   - Modell: `hkunlp/instructor-xl`
-  - Wird vom Go Worker über HTTP angesprochen
+  - Bereitstellung über Load Balancer mit EC2 Auto Scaling Group (ASG)
+  - Wird zusammen mit dem Go Worker gestartet und skaliert
   - Führt die eigentliche Berechnung der Embeddings durch
-  - Bereitstellung auf EC2 Spot-Instances, die parallel vom Go Worker genutzt werden
   - Unterstützung mehrerer Modelle (Small/Large Variants)
+  - ASG skaliert basierend auf Last herunter, wenn keine Anfragen mehr kommen
 
 - **Create Lambda / Update Lambda / Delete Lambda**:
   - Schreiben, Aktualisieren und Löschen von Embeddings in Pinecone.
@@ -115,13 +118,21 @@ flowchart TD
     GoWorker -- Prüft Status --> DynamoDB
     S3TransferBucket -- Worker lädt Dokumente --> GoWorker
     
-    GoWorker -- HTTP Request für Embedding --> PythonAPI("Python Embedding API (FastAPI)")
+    GoWorker -- HTTP Requests --> LoadBalancer("Load Balancer")
+    
+    subgraph "Auto Scaling Group"
+    PythonAPI1("Python Embedding API 1")
+    PythonAPI2("Python Embedding API 2")
+    PythonAPI3("Python Embedding API 3")
+    end
+    
+    LoadBalancer --> PythonAPI1 & PythonAPI2 & PythonAPI3
     
     GoWorker -- Vektorisierte Chunks --> SQSCreateQueue("SQS: CreateQueue") & SQSUpdateQueue("SQS: UpdateQueue")
     
     SQSCreateQueue --> CreateLambda("Create Lambda")
     SQSUpdateQueue --> UpdateLambda("Update Lambda")
-    SQSDeleteQueue --> DeleteLambda("Delete Lambda")
+    SQSDeleteQueue --> DeleteLambda("Create Lambda")
     
     CreateLambda --> PineconeCreate["Pinecone: Insert New Chunks"]
     UpdateLambda --> PineconeUpdate["Pinecone: Replace Chunks"]
@@ -146,7 +157,9 @@ flowchart TD
 │   ├── backend.tf
 │   ├── cloudfront.tf
 │   ├── dynamodb-document-status.tf
-│   ├── ec2-spot-instances.tf
+│   ├── ec2-spot-worker.tf
+│   ├── ec2-asg-api.tf
+│   ├── load-balancer.tf
 │   ├── lambda-auth.tf
 │   ├── lambda-create.tf
 │   ├── lambda-delete.tf
@@ -182,6 +195,10 @@ flowchart TD
 │   ├── variants/
 │   │   ├── small-model/
 │   │   ├── large-model/
+├── scripts/
+│   ├── start-worker.sh
+│   ├── monitor-queue.sh
+│   ├── shutdown-resources.sh
 ├── frontend/
 │   ├── public/
 │   ├── src/
@@ -207,18 +224,21 @@ flowchart TD
   - API Gateway mit API-Key Authentifizierung (`api-apigateway-key.tf`)
   - Lambda Funktionen in einzelnen Dateien (`lambda-*.tf`)
   - SQS Queues in funktionalen Dateien (`sqs-*.tf`)
-  - EC2 Spot-Instances für Worker und API (`ec2-spot-instances.tf`)
+  - EC2 Spot-Instance für Go Worker (`ec2-spot-worker.tf`)
+  - EC2 ASG für Python API (`ec2-asg-api.tf`)
+  - Load Balancer für die Python API (`load-balancer.tf`)
   - S3 Buckets für verschiedene Anwendungsfälle (`s3-*.tf`)
   - DynamoDB für Dokumentstatus-Tracking (`dynamodb-document-status.tf`)
 - **Secure API Gateway** nutzt Auth Lambda für Clerk Token Prüfung.
 - **Simple API Gateway** für serverseitige interne Calls per API Key.
 - **Webhook Lambda** verarbeitet alle Events, aktualisiert DynamoDB und routed sie.
 - **DynamoDB** speichert den aktuellen Status jedes Dokuments für Optimierung.
-- **Go Embedding Worker** prozessiert Dokumente in Batches mit Multi-Threading und führt Chunking durch.
-- **Python Embedding API** berechnet die eigentlichen Vektorrepräsentationen.
+- **Go Embedding Worker** prozessiert Dokumente in Batches mit Multi-Threading, führt Chunking durch und fährt herunter, wenn Queue leer ist.
+- **Python Embedding API** mit ASG hinter Load Balancer berechnet die Vektorrepräsentationen.
 - **Create/Update/Delete Lambdas** kommunizieren mit Pinecone und senden parallele Events an die S3Queue.
 - **S3 Worker Lambda** hält den S3 Speicher synchron.
 - **Zwei getrennte DeadLetterQueues** für Pinecone- und S3-Fehler.
 - **GitHub Actions** verwalten alle Build/Deploy Aufgaben.
+- **Automatische Shutdown-Logik** für Worker und API bei leeren Queues.
 
 ---
