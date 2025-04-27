@@ -14,19 +14,25 @@
 
 ### Backend
 
-- **Sprache:** Alles in **Go**, außer dem Embedding Worker, der in **Python** entwickelt ist.
+- **Sprache:** Alles in **Go**, außer dem Embedding FastAPI Service, der in **Python** entwickelt ist.
 - **API Gateway**:
   - **Secure API Gateway** mit Lambda Authorizer für Clerk Token Validation.
   - **Simple API Gateway** mit API-Key Zugriff für serverseitige interne Prozesse.
 - **Webhook Lambda**:
   - Validiert Requests.
   - Generiert UUID für Dokumente und lädt große Dokumente (>256KB) in den S3 Transfer Bucket.
+  - Speichert Status für jedes Dokument in DynamoDB (doc_id, status, timestamp).
   - Leitet Operationen (INSERT/UPDATE/DELETE) mit Referenz zum S3-Objekt gezielt über SQS Queues weiter.
 - **Auth Lambda**:
   - Verifiziert Clerk JWTs für die Secure API Gateway Zugriffe.
 - **S3 Transfer Bucket**:
   - Temporäre Speicherung großer Dokumente (>256KB), die nicht direkt über SQS übertragen werden können.
-  - Embedding Worker lädt Dokumente von hier, statt direkt aus der Queue.
+  - Workers laden Dokumente von hier, statt direkt aus der Queue.
+- **DynamoDB Document Status Table**:
+  - Speichert aktuellen Status jedes Dokuments (CREATE, UPDATE, DELETE)
+  - Ermöglicht Worker-Optimierung und verhindert veraltete Dokument-Verarbeitung
+  - Primary Key: doc_id
+  - Zusätzliche Attribute: status, last_updated_at, ttl
 - **SQS Queues**:
   - ChangeQueue (für den Embedding Worker, enthält S3-Referenzen)
   - CreateQueue (für neu erzeugte Embeddings)
@@ -36,12 +42,21 @@
   - DeadLetterQueue Pinecone (Fehlerbehandlung Pinecone-Prozesse)
   - DeadLetterQueue S3 (Fehlerbehandlung S3-Operationen)
 
-- **Embedding Worker** (FastAPI Python Service):
+- **Embedding Worker** (Go Service):
+  - Manuell oder per Batch-Schedule gestartet (nicht via ASG)
+  - Prozessiert SQS Messages in Batches aus der ChangeQueue
+  - Prüft in DynamoDB den aktuellen Status des Dokuments vor der Verarbeitung
+  - Führt das Chunking der Dokumente durch
+  - Nutzt große Spot-Instances für kostengünstige Verarbeitung
+  - Bei Absturz werden Messages durch SQS Visibility Timeout zurück in die Queue gelegt
+  - Verwendet großzügigen SQS Visibility Timeout für die Batch-Verarbeitung
+
+- **Embedding API** (Python FastAPI Service):
   - Modell: `hkunlp/instructor-xl`
-  - Lädt Dokumente aus dem S3 Transfer Bucket basierend auf Referenzen aus der ChangeQueue.
-  - Bereitstellung über EC2 Auto Scaling Group (ASG).
-  - Keine laufenden Instanzen im Idle, automatische Skalierung bei Last.
-  - Unterstützung mehrerer Modelle (Small/Large Variants).
+  - Wird vom Go Worker über HTTP angesprochen
+  - Führt die eigentliche Berechnung der Embeddings durch
+  - Bereitstellung auf EC2 Spot-Instances, die parallel vom Go Worker genutzt werden
+  - Unterstützung mehrerer Modelle (Small/Large Variants)
 
 - **Create Lambda / Update Lambda / Delete Lambda**:
   - Schreiben, Aktualisieren und Löschen von Embeddings in Pinecone.
@@ -63,7 +78,8 @@
 - Vollständig via **Terraform**.
 - CI/CD Pipelines via **GitHub Actions**:
   - Lambda Deployments
-  - Embedding Worker Docker Build & Push
+  - Go Worker Docker Build & Push
+  - Python Embedding API Docker Build & Push
   - Frontend Deployment
   - Auth Lambda Deployment
   - Terraform Deployment
@@ -71,10 +87,10 @@
 
 ### Monitoring & Logging
 
-- **CloudWatch Logs** für alle Lambdas und EC2 Services.
+- **CloudWatch Logs** für alle Lambdas und Services.
 - Separate LogGroups.
 - Fehlerbehandlung über eigene DeadLetterQueues.
-- CloudWatch Alarme für EC2 Auto Scaling und Queue-Tiefe.
+- CloudWatch Alarme für Queue-Tiefe und Job-Ausführung.
 
 ---
 
@@ -90,17 +106,18 @@ flowchart TD
 
     SimpleAPIGateway --> WebhookLambda
 
+    WebhookLambda -- Schreibt Status --> DynamoDB[("DynamoDB Status Table")]
     WebhookLambda -- DELETE Event --> SQSDeleteQueue("SQS: DeleteQueue")
     WebhookLambda -- Dokument > 256KB --> S3TransferBucket("S3 Transfer Bucket")
     WebhookLambda -- INSERT/UPDATE mit S3-Referenz --> SQSChangeQueue("SQS: ChangeQueue")
     
-    subgraph "Auto Scaling Group (0-N Instances)"
-    EmbeddingWorker("Embedding Worker - Instructor XL")
-    end
+    SQSChangeQueue -- Batch Processing --> GoWorker("Go Embedding Worker (Spot Instance)")
+    GoWorker -- Prüft Status --> DynamoDB
+    S3TransferBucket -- Worker lädt Dokumente --> GoWorker
     
-    SQSChangeQueue -- Triggers ASG Scaling --> EmbeddingWorker
-    S3TransferBucket -- Worker lädt Dokumente --> EmbeddingWorker
-    EmbeddingWorker -- Vektorisiert --> SQSCreateQueue("SQS: CreateQueue") & SQSUpdateQueue("SQS: UpdateQueue")
+    GoWorker -- HTTP Request für Embedding --> PythonAPI("Python Embedding API (FastAPI)")
+    
+    GoWorker -- Vektorisierte Chunks --> SQSCreateQueue("SQS: CreateQueue") & SQSUpdateQueue("SQS: UpdateQueue")
     
     SQSCreateQueue --> CreateLambda("Create Lambda")
     SQSUpdateQueue --> UpdateLambda("Update Lambda")
@@ -128,8 +145,8 @@ flowchart TD
 │   ├── api-apigateway-key.tf
 │   ├── backend.tf
 │   ├── cloudfront.tf
-│   ├── ec2-asg.tf
-│   ├── ec2-launch-template.tf
+│   ├── dynamodb-document-status.tf
+│   ├── ec2-spot-instances.tf
 │   ├── lambda-auth.tf
 │   ├── lambda-create.tf
 │   ├── lambda-delete.tf
@@ -156,6 +173,11 @@ flowchart TD
 │   ├── auth/
 ├── embedding-worker/
 │   ├── Dockerfile
+│   ├── main.go
+│   ├── chunker/
+│   ├── api-client/
+├── embedding-api/
+│   ├── Dockerfile
 │   ├── app/
 │   ├── variants/
 │   │   ├── small-model/
@@ -171,7 +193,8 @@ flowchart TD
 │   │   ├── lambda-delete.yml
 │   │   ├── lambda-s3-worker.yml
 │   │   ├── lambda-auth.yml
-│   │   ├── embedding-worker.yml
+│   │   ├── go-worker.yml
+│   │   ├── python-api.yml
 │   │   ├── frontend-deploy.yml
 │   │   ├── terraform-apply.yml
 ```
@@ -184,12 +207,15 @@ flowchart TD
   - API Gateway mit API-Key Authentifizierung (`api-apigateway-key.tf`)
   - Lambda Funktionen in einzelnen Dateien (`lambda-*.tf`)
   - SQS Queues in funktionalen Dateien (`sqs-*.tf`)
-  - EC2 Auto Scaling Komponenten (`ec2-*.tf`)
+  - EC2 Spot-Instances für Worker und API (`ec2-spot-instances.tf`)
   - S3 Buckets für verschiedene Anwendungsfälle (`s3-*.tf`)
+  - DynamoDB für Dokumentstatus-Tracking (`dynamodb-document-status.tf`)
 - **Secure API Gateway** nutzt Auth Lambda für Clerk Token Prüfung.
 - **Simple API Gateway** für serverseitige interne Calls per API Key.
-- **Webhook Lambda** verarbeitet alle Events und routed sie.
-- **Embedding Worker** skaliert automatisch basierend auf Last.
+- **Webhook Lambda** verarbeitet alle Events, aktualisiert DynamoDB und routed sie.
+- **DynamoDB** speichert den aktuellen Status jedes Dokuments für Optimierung.
+- **Go Embedding Worker** prozessiert Dokumente in Batches mit Multi-Threading und führt Chunking durch.
+- **Python Embedding API** berechnet die eigentlichen Vektorrepräsentationen.
 - **Create/Update/Delete Lambdas** kommunizieren mit Pinecone und senden parallele Events an die S3Queue.
 - **S3 Worker Lambda** hält den S3 Speicher synchron.
 - **Zwei getrennte DeadLetterQueues** für Pinecone- und S3-Fehler.
